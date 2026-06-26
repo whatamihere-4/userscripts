@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLR Download Preview GIF
 // @namespace    https://github.com/whatamihere-4/userscripts
-// @version      1.3.0
+// @version      1.7.0
 // @description  Download scene preview MP4 from SexLikeReal as a GIF
 // @author       whatamihere-4
 // @updateURL    https://raw.githubusercontent.com/whatamihere-4/userscripts/main/sexlikereal-download-preview-gif.user.js
@@ -10,27 +10,21 @@
 // @connect      cdn-vr.sexlikereal.com
 // @grant        GM_xmlhttpRequest
 // @grant        GM_download
-// @grant        GM_getResourceURL
 // @grant        GM_addStyle
-// @require      https://cdnjs.cloudflare.com/ajax/libs/gif.js/0.2.0/gif.js
-// @resource     gifWorker https://cdnjs.cloudflare.com/ajax/libs/gif.js/0.2.0/gif.worker.js
+// @require      https://cdn.jsdelivr.net/npm/gifenc@1.0.3/dist/gifenc.js
+// @require      data:application/javascript,globalThis.GIFEncoder%3Dexports.GIFEncoder%3BglobalThis.quantize%3Dexports.quantize%3BglobalThis.applyPalette%3Dexports.applyPalette
 // @run-at       document-idle
 // ==/UserScript==
 
 (function () {
   "use strict";
 
-  const MAX_GIF_BYTES = 15 * 1024 * 1024;
+  const { GIFEncoder, quantize, applyPalette } = globalThis;
+
+  const FPS = 24;
+  const PALETTE_SAMPLE_STEP = 8;
   const PREVIEW_URL = (sceneId) =>
     `https://cdn-vr.sexlikereal.com/preview/14x1/${sceneId}_300p.mp4`;
-
-  // gif.js compresses poorly vs ffmpeg; full 500x300 @ 60fps is ~60 MB.
-  // Profiles are ordered best-quality-first; later ones are smaller fallbacks.
-  const ENCODE_PROFILES = [
-    { fps: 60, scale: 0.45, quality: 15 },
-    { fps: 60, scale: 0.38, quality: 20 },
-    { fps: 45, scale: 0.38, quality: 25 },
-  ];
 
   const sceneId = location.pathname.match(/-(\d+)\/?$/)?.[1];
   if (!sceneId) {
@@ -113,15 +107,15 @@
     });
   }
 
-  async function captureFrames(video, profile) {
+  async function captureFrames(video) {
     const canvas = document.createElement("canvas");
     const ctx = canvas.getContext("2d");
-    canvas.width = Math.round(video.videoWidth * profile.scale);
-    canvas.height = Math.round(video.videoHeight * profile.scale);
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
 
-    const frameInterval = 1 / profile.fps;
-    const totalFrames = Math.max(1, Math.floor(video.duration * profile.fps));
-    const frameDelay = Math.round(1000 / profile.fps);
+    const frameInterval = 1 / FPS;
+    const totalFrames = Math.max(1, Math.floor(video.duration * FPS));
+    const frameDelay = Math.round(1000 / FPS);
     const frames = [];
 
     for (let i = 0; i < totalFrames; i++) {
@@ -137,22 +131,39 @@
     return frames;
   }
 
-  function encodeGif(frames, quality) {
-    return new Promise((resolve, reject) => {
-      const gif = new GIF({
-        workers: 2,
-        quality,
-        workerScript: GM_getResourceURL("gifWorker"),
-      });
+  function buildGlobalPalette(frames) {
+    const samples = [];
+    for (let i = 0; i < frames.length; i += PALETTE_SAMPLE_STEP) {
+      samples.push(frames[i].imageData.data);
+    }
 
-      for (const frame of frames) {
-        gif.addFrame(frame.imageData, { delay: frame.delay });
+    const totalLength = samples.reduce((sum, data) => sum + data.length, 0);
+    const pixels = new Uint8Array(totalLength);
+    let offset = 0;
+    for (const data of samples) {
+      pixels.set(data, offset);
+      offset += data.length;
+    }
+
+    return quantize(pixels, 256);
+  }
+
+  function encodeGif(frames) {
+    const gif = GIFEncoder();
+    const palette = buildGlobalPalette(frames);
+
+    for (let i = 0; i < frames.length; i++) {
+      const { data, width, height } = frames[i].imageData;
+      const index = applyPalette(data, palette);
+      const opts = { delay: frames[i].delay };
+      if (i === 0) {
+        opts.palette = palette;
       }
+      gif.writeFrame(index, width, height, opts);
+    }
 
-      gif.on("finished", resolve);
-      gif.on("abort", () => reject(new Error("GIF encoding aborted")));
-      gif.render();
-    });
+    gif.finish();
+    return new Blob([gif.bytes()], { type: "image/gif" });
   }
 
   async function convertMp4ToGif(mp4Blob, onProgress) {
@@ -170,21 +181,11 @@
         throw new Error("Preview video has no readable metadata");
       }
 
-      for (let i = 0; i < ENCODE_PROFILES.length; i++) {
-        const profile = ENCODE_PROFILES[i];
-        onProgress(
-          i === 0 ? "Converting…" : `Optimizing (${i + 1}/${ENCODE_PROFILES.length})…`
-        );
+      onProgress("Capturing frames…");
+      const frames = await captureFrames(video);
 
-        const frames = await captureFrames(video, profile);
-        const gifBlob = await encodeGif(frames, profile.quality);
-
-        if (gifBlob.size <= MAX_GIF_BYTES || i === ENCODE_PROFILES.length - 1) {
-          return gifBlob;
-        }
-      }
-
-      throw new Error("Failed to produce GIF under size limit");
+      onProgress("Encoding GIF…");
+      return encodeGif(frames);
     } finally {
       video.removeAttribute("src");
       video.load();
