@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLR Download Preview GIF
 // @namespace    https://github.com/whatamihere-4/userscripts
-// @version      1.2.0
+// @version      1.3.0
 // @description  Download scene preview MP4 from SexLikeReal as a GIF
 // @author       whatamihere-4
 // @updateURL    https://raw.githubusercontent.com/whatamihere-4/userscripts/main/sexlikereal-download-preview-gif.user.js
@@ -20,10 +20,17 @@
 (function () {
   "use strict";
 
-  const FPS = 60;
-  const GIF_QUALITY = 10;
+  const MAX_GIF_BYTES = 15 * 1024 * 1024;
   const PREVIEW_URL = (sceneId) =>
     `https://cdn-vr.sexlikereal.com/preview/14x1/${sceneId}_300p.mp4`;
+
+  // gif.js compresses poorly vs ffmpeg; full 500x300 @ 60fps is ~60 MB.
+  // Profiles are ordered best-quality-first; later ones are smaller fallbacks.
+  const ENCODE_PROFILES = [
+    { fps: 60, scale: 0.45, quality: 15 },
+    { fps: 60, scale: 0.38, quality: 20 },
+    { fps: 45, scale: 0.38, quality: 25 },
+  ];
 
   const sceneId = location.pathname.match(/-(\d+)\/?$/)?.[1];
   if (!sceneId) {
@@ -106,16 +113,15 @@
     });
   }
 
-  async function captureFrames(video) {
+  async function captureFrames(video, profile) {
     const canvas = document.createElement("canvas");
     const ctx = canvas.getContext("2d");
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
+    canvas.width = Math.round(video.videoWidth * profile.scale);
+    canvas.height = Math.round(video.videoHeight * profile.scale);
 
-    const fps = FPS;
-    const frameInterval = 1 / fps;
-    const totalFrames = Math.max(1, Math.floor(video.duration * fps));
-    const frameDelay = Math.round(1000 / fps);
+    const frameInterval = 1 / profile.fps;
+    const totalFrames = Math.max(1, Math.floor(video.duration * profile.fps));
+    const frameDelay = Math.round(1000 / profile.fps);
     const frames = [];
 
     for (let i = 0; i < totalFrames; i++) {
@@ -131,11 +137,11 @@
     return frames;
   }
 
-  function encodeGif(frames) {
+  function encodeGif(frames, quality) {
     return new Promise((resolve, reject) => {
       const gif = new GIF({
         workers: 2,
-        quality: GIF_QUALITY,
+        quality,
         workerScript: GM_getResourceURL("gifWorker"),
       });
 
@@ -147,6 +153,43 @@
       gif.on("abort", () => reject(new Error("GIF encoding aborted")));
       gif.render();
     });
+  }
+
+  async function convertMp4ToGif(mp4Blob, onProgress) {
+    const videoUrl = URL.createObjectURL(mp4Blob);
+    const video = document.createElement("video");
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = "auto";
+    video.src = videoUrl;
+
+    try {
+      await waitForEvent(video, "loadedmetadata");
+
+      if (!video.duration || !video.videoWidth || !video.videoHeight) {
+        throw new Error("Preview video has no readable metadata");
+      }
+
+      for (let i = 0; i < ENCODE_PROFILES.length; i++) {
+        const profile = ENCODE_PROFILES[i];
+        onProgress(
+          i === 0 ? "Converting…" : `Optimizing (${i + 1}/${ENCODE_PROFILES.length})…`
+        );
+
+        const frames = await captureFrames(video, profile);
+        const gifBlob = await encodeGif(frames, profile.quality);
+
+        if (gifBlob.size <= MAX_GIF_BYTES || i === ENCODE_PROFILES.length - 1) {
+          return gifBlob;
+        }
+      }
+
+      throw new Error("Failed to produce GIF under size limit");
+    } finally {
+      video.removeAttribute("src");
+      video.load();
+      URL.revokeObjectURL(videoUrl);
+    }
   }
 
   function downloadGif(blob, filename) {
@@ -167,30 +210,6 @@
     });
   }
 
-  async function convertMp4ToGif(mp4Blob) {
-    const videoUrl = URL.createObjectURL(mp4Blob);
-    const video = document.createElement("video");
-    video.muted = true;
-    video.playsInline = true;
-    video.preload = "auto";
-    video.src = videoUrl;
-
-    try {
-      await waitForEvent(video, "loadedmetadata");
-
-      if (!video.duration || !video.videoWidth || !video.videoHeight) {
-        throw new Error("Preview video has no readable metadata");
-      }
-
-      const frames = await captureFrames(video);
-      return await encodeGif(frames);
-    } finally {
-      video.removeAttribute("src");
-      video.load();
-      URL.revokeObjectURL(videoUrl);
-    }
-  }
-
   button.addEventListener("click", async () => {
     const originalText = button.textContent;
     button.disabled = true;
@@ -198,7 +217,9 @@
 
     try {
       const mp4Blob = await fetchMp4(PREVIEW_URL(sceneId));
-      const gifBlob = await convertMp4ToGif(mp4Blob);
+      const gifBlob = await convertMp4ToGif(mp4Blob, (text) => {
+        button.textContent = text;
+      });
       await downloadGif(gifBlob, `${sceneId}-preview.gif`);
       button.textContent = originalText;
     } catch (error) {
