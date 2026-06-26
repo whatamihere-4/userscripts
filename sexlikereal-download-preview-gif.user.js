@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SLR Download Preview GIF
 // @namespace    https://github.com/whatamihere-4/userscripts
-// @version      1.8.0
+// @version      1.9.0
 // @description  Download scene preview MP4 from SexLikeReal as a GIF
 // @author       whatamihere-4
 // @updateURL    https://raw.githubusercontent.com/whatamihere-4/userscripts/main/sexlikereal-download-preview-gif.user.js
@@ -20,7 +20,8 @@
 (function () {
   "use strict";
 
-  const FPS = 24;
+  const FPS = 15;
+  const OUTPUT_WIDTH = 480;
   const PALETTE_SAMPLE_STEP = 8;
   const GIFENC_URL =
     "https://cdn.jsdelivr.net/npm/gifenc@1.0.3/dist/gifenc.js";
@@ -241,8 +242,10 @@
   async function captureFrames(video) {
     const canvas = document.createElement("canvas");
     const ctx = canvas.getContext("2d");
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
+    canvas.width = OUTPUT_WIDTH;
+    canvas.height = Math.round(
+      (video.videoHeight / video.videoWidth) * OUTPUT_WIDTH
+    );
 
     const frameInterval = 1 / FPS;
     const totalFrames = Math.max(1, Math.floor(video.duration * FPS));
@@ -440,7 +443,7 @@
     log("Script started", {
       href: location.href,
       debug: DEBUG,
-      version: "1.8.0",
+      version: "1.9.0",
     });
     if (!DEBUG) {
       log("Verbose panel off; run localStorage.setItem('slr-gif-debug','1') and reload");

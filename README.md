@@ -8,7 +8,7 @@ Click a script name below to install it in your userscript manager (ScriptCat, T
 
 ### [SLR Download Preview GIF](https://raw.githubusercontent.com/whatamihere-4/userscripts/main/sexlikereal-download-preview-gif.user.js)
 
-Adds a **Download preview GIF** button on [SexLikeReal](https://www.sexlikereal.com/) scene pages. Fetches the 300p preview MP4 from the CDN, converts it to a 24 fps GIF at full resolution (500×300) using palette optimization ([gifenc](https://www.npmjs.com/package/gifenc) via CDN), and saves `{sceneId}-preview.gif`.
+Adds a **Download preview GIF** button on [SexLikeReal](https://www.sexlikereal.com/) scene pages. Fetches the 300p preview MP4 from the CDN, converts it to a 15 fps GIF at 480px width using palette optimization ([gifenc](https://www.npmjs.com/package/gifenc) via CDN), and saves `{sceneId}-preview.gif`.
 
 - **Match:** `*://*.sexlikereal.com/scenes/*`, `*://sexlikereal.com/scenes/*`
 - **Requires:** access to `cdn-vr.sexlikereal.com` and `cdn.jsdelivr.net`
