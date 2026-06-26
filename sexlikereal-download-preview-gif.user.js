@@ -1,34 +1,66 @@
 // ==UserScript==
 // @name         SLR Download Preview GIF
 // @namespace    https://github.com/whatamihere-4/userscripts
-// @version      1.7.0
+// @version      1.7.1
 // @description  Download scene preview MP4 from SexLikeReal as a GIF
 // @author       whatamihere-4
 // @updateURL    https://raw.githubusercontent.com/whatamihere-4/userscripts/main/sexlikereal-download-preview-gif.user.js
 // @downloadURL  https://raw.githubusercontent.com/whatamihere-4/userscripts/main/sexlikereal-download-preview-gif.user.js
 // @match        *://*.sexlikereal.com/scenes/*
 // @connect      cdn-vr.sexlikereal.com
+// @connect      cdn.jsdelivr.net
 // @grant        GM_xmlhttpRequest
 // @grant        GM_download
 // @grant        GM_addStyle
-// @require      https://cdn.jsdelivr.net/npm/gifenc@1.0.3/dist/gifenc.js
-// @require      data:application/javascript,globalThis.GIFEncoder%3Dexports.GIFEncoder%3BglobalThis.quantize%3Dexports.quantize%3BglobalThis.applyPalette%3Dexports.applyPalette
 // @run-at       document-idle
 // ==/UserScript==
 
 (function () {
   "use strict";
 
-  const { GIFEncoder, quantize, applyPalette } = globalThis;
-
   const FPS = 24;
   const PALETTE_SAMPLE_STEP = 8;
+  const GIFENC_URL =
+    "https://cdn.jsdelivr.net/npm/gifenc@1.0.3/dist/gifenc.js";
   const PREVIEW_URL = (sceneId) =>
     `https://cdn-vr.sexlikereal.com/preview/14x1/${sceneId}_300p.mp4`;
 
   const sceneId = location.pathname.match(/-(\d+)\/?$/)?.[1];
   if (!sceneId) {
     return;
+  }
+
+  let gifencPromise = null;
+
+  function loadGifenc() {
+    if (gifencPromise) {
+      return gifencPromise;
+    }
+
+    gifencPromise = new Promise((resolve, reject) => {
+      GM_xmlhttpRequest({
+        method: "GET",
+        url: GIFENC_URL,
+        onload(response) {
+          if (response.status < 200 || response.status >= 300) {
+            reject(new Error(`Could not load gifenc (${response.status})`));
+            return;
+          }
+          try {
+            const module = { exports: {} };
+            new Function("exports", response.responseText)(module.exports);
+            resolve(module.exports);
+          } catch (error) {
+            reject(error);
+          }
+        },
+        onerror() {
+          reject(new Error("Network error while loading gifenc"));
+        },
+      });
+    });
+
+    return gifencPromise;
   }
 
   GM_addStyle(`
@@ -131,7 +163,7 @@
     return frames;
   }
 
-  function buildGlobalPalette(frames) {
+  function buildGlobalPalette(frames, quantize) {
     const samples = [];
     for (let i = 0; i < frames.length; i += PALETTE_SAMPLE_STEP) {
       samples.push(frames[i].imageData.data);
@@ -148,9 +180,10 @@
     return quantize(pixels, 256);
   }
 
-  function encodeGif(frames) {
+  function encodeGif(frames, gifenc) {
+    const { GIFEncoder, quantize, applyPalette } = gifenc;
     const gif = GIFEncoder();
-    const palette = buildGlobalPalette(frames);
+    const palette = buildGlobalPalette(frames, quantize);
 
     for (let i = 0; i < frames.length; i++) {
       const { data, width, height } = frames[i].imageData;
@@ -166,7 +199,7 @@
     return new Blob([gif.bytes()], { type: "image/gif" });
   }
 
-  async function convertMp4ToGif(mp4Blob, onProgress) {
+  async function convertMp4ToGif(mp4Blob, gifenc, onProgress) {
     const videoUrl = URL.createObjectURL(mp4Blob);
     const video = document.createElement("video");
     video.muted = true;
@@ -185,7 +218,7 @@
       const frames = await captureFrames(video);
 
       onProgress("Encoding GIF…");
-      return encodeGif(frames);
+      return encodeGif(frames, gifenc);
     } finally {
       video.removeAttribute("src");
       video.load();
@@ -217,8 +250,9 @@
     button.textContent = "Converting…";
 
     try {
+      const gifenc = await loadGifenc();
       const mp4Blob = await fetchMp4(PREVIEW_URL(sceneId));
-      const gifBlob = await convertMp4ToGif(mp4Blob, (text) => {
+      const gifBlob = await convertMp4ToGif(mp4Blob, gifenc, (text) => {
         button.textContent = text;
       });
       await downloadGif(gifBlob, `${sceneId}-preview.gif`);
